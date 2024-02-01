@@ -6,3 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+color-eyre = { workspace = true }
+figment = { workspace =true, features = ["env"] }
+serde = { workspace = true, features = ["derive"] }
+sqlx = { workspace = true, features = ["sqlite"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
