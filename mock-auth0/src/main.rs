@@ -1,19 +1,16 @@
 use color_eyre::eyre::Result;
-use config::Config;
-use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions};
+
+use self::{config::Config, state::AppState};
 
 mod config;
+mod state;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
     let config = Config::load()?;
-    let sqlite = SqliteConnectOptions::new()
-        .filename(&config.database)
-        .create_if_missing(true)
-        .connect()
-        .await?;
+    let state = AppState::new(&config).await?;
 
     Ok(())
 }
