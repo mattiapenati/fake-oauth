@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+  <head>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Mono:wght@100..900&family=Noto+Sans:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/@blaze/css@12.2.0/dist/blaze/blaze.css">
+    <link rel="stylesheet" href="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/styles/default.min.css">
+    <script src="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
+    <script src="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/languages/json.min.js"></script>
+    <style>
+      body {
+        font-family: "Noto Sans", sans-serif;
+        font-optical-sizing: auto;
+        font-style: normal;
+        font-size: 1.25rem;
+        line-height: 1.75rem;
+        padding: 0.5em;
+      }
+      pre {
+        font-family: "Noto Sans Mono", monospace;
+        font-optical-sizing: auto;
+        font-style: normal;
+        font-size: 0.75rem;
+        line-height: 1rem;
+      }
+    </style>
+    <title>Mock OAuth | Login</title>
+  </head>
+  <body onload="updateMetadata">
+    <div class="o-container o-container--medium c-card u-high">
+      <form method="GET" action="/authorize">
+        <header class="c-card__header">
+          <h2 class="c-heading u-xlarge">Pick a user</h2>
+        </header>
+        <div class="c-card__body">
+          <div class="o-grid o-grid--wrap">
+            <div class="o-grid__cell o-grid__cell--width-100">
+              <select id="user_id" name="user_id" class="c-field">
+              {% for user in users %}
+                <option value="{{user.0}}">{{user.0}}</option>
+              {% endfor %}
+              </select>
+            </div>
+            <div class="o-grid__cell o-grid__cell--width-100">
+              <div class="o-form-element">
+                <button class="c-button c-button--block" type="submit">Login</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="c-card__item c-card__item--divider" role="separator">
+          User Metadata
+        </div>
+        <div class="c-card__item">
+          <small class="u-small">
+            <pre><code class="language-json" id="metadata"></code></pre>
+          </small>
+        </div>
+
+        <input type="hidden" id="client_id" name="client_id" value="{{client_id}}">
+        <input type="hidden" id="redirect_uri" name="redirect_uri" value="{{redirect_uri}}">
+        {% match state %}
+        {% when Some with (state_value) %}
+        <input type="hidden" id="state" name="state" value="{{state_value}}">
+        {% else %}
+        {% endmatch -%}
+        {%- match nonce %}
+        {% when Some with (nonce_value) %}
+        <input type="hidden" id="nonce" name="nonce" value="{{nonce_value}}">
+        {% else %}
+        {% endmatch %}
+      </form>
+    </div>
+  <script>
+    function updateMetadata() {
+      const user_id = document.getElementById("user_id").value;
+      const metadata = document.getElementById("metadata");
+      let code;
+      {% for user in users %}
+      switch (user_id) {
+        case "{{user.0}}":
+          code = JSON.stringify({{user.1}}, null, 2);
+          break;
+      }
+      {% endfor %}
+      if (code !== undefined) {
+        metadata.innerHTML = hljs.highlight(code, {language: "json"}).value;
+      }
+    }
+    window.addEventListener("load", updateMetadata);
+    document.getElementById("user_id")
+      .addEventListener("change", updateMetadata);
+  </script>
+</html>

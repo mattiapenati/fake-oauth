@@ -1,16 +1,38 @@
-[workspace]
-members = ["mock-auth0"]
-resolver = "2"
-
-[workspace.package]
+[package]
+name = "fake-oauth"
+version = "0.1.0"
 authors = ["Mattia Penati <mattia.penati@protonmail.com>"]
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 
-[workspace.dependencies]
-axum = "0.7.4"
+[dependencies]
+askama = { version = "0.12.1", features = ["with-axum", "mime", "mime_guess"] }
+askama_axum = "0.4.0"
+axum = { version = "0.7.4", features = ["macros"] }
 color-eyre = "0.6.2"
-figment = "0.10.14"
-serde = "1.0.196"
-sqlx = "0.7.3"
-tokio = "1.35.1"
+cookie = "0.18.0"
+data-encoding = "2.5.0"
+dotenvy = "0.15.7"
+figment = { version = "0.10.14", features = ["env"] }
+futures = "0.3.30"
+jsonwebtoken = "9.2.0"
+parking_lot = "0.12.1"
+rand = { version = "0.8.5", features = ["getrandom"] }
+rsa = "0.9.6"
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+serde_urlencoded = "0.7.1"
+time = "0.3.34"
+tokio = { version = "1.36.0", features = ["macros", "rt", "rt-multi-thread"] }
+toml = "0.8.10"
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+url = { version = "2.5.0", features = ["serde"] }
+watchexec = "3.0.1"
+watchexec-signals = "2.1.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
