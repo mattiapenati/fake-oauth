@@ -1,5 +1,6 @@
 [package]
 name = "fake-oauth"
+description = "A fake OAuth implementation good for testing environment"
 version = "0.1.0"
 authors = ["Mattia Penati <mattia.penati@protonmail.com>"]
 edition = "2021"

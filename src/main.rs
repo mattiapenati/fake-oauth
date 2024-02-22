@@ -31,7 +31,11 @@ const COOKIE_LIFETIME: Duration = Duration::hours(24);
 async fn main() -> Result<()> {
     use tokio::net::TcpListener;
 
-    dotenvy::dotenv()?;
+    match dotenvy::dotenv() {
+        Ok(path) => tracing::info!("file {} loaded", path.display()),
+        Err(err) if err.not_found() => tracing::info!(".env file not found"),
+        Err(err) => return Err(err.into()),
+    }
     trace_init();
 
     let config = Config::load()?;
@@ -126,11 +130,12 @@ impl Config {
     /// Load the configuration from the environment variables
     fn load() -> Result<Self> {
         use figment::{providers::*, Figment};
+        const DEFAULT_ADDR: &str = "[::1]:7160";
         const DEFAULT_USERS: &str = "/var/lib/fake-oauth/users.toml";
 
         let config = Figment::new()
             .merge(Env::prefixed("FAKE_OAUTH_"))
-            .join(Serialized::default("addr", "[::1]:8080"))
+            .join(Serialized::default("addr", DEFAULT_ADDR))
             .join(Serialized::default("users", DEFAULT_USERS))
             .extract::<Self>()?;
 
