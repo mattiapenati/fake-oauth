@@ -1,36 +1,34 @@
 use std::{
     borrow::Cow,
     collections::HashMap,
-    future::Future,
     net::SocketAddr,
     ops::Deref,
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
+    task::{ready, Context, Poll},
 };
 
-use askama::Template;
+use anyhow::{anyhow, Result};
 use axum::{
-    extract::{FromRef, FromRequestParts, OriginalUri, Query, State},
+    extract::{FromRequestParts, OriginalUri, Query, State},
     http::{header, request::Parts, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
     routing, Form, Json, Router,
 };
-use color_eyre::eyre::{anyhow, Result};
 use cookie::Cookie;
+use pin_project_lite::pin_project;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use time::{Duration, OffsetDateTime};
-use tokio::sync::RwLock;
 use url::Url;
 
 const COOKIE_NAME: &str = "fake-oauth-session";
 const COOKIE_LIFETIME: Duration = Duration::hours(24);
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    use tokio::net::TcpListener;
+type Jinja = minijinja::Environment<'static>;
 
+fn main() -> Result<()> {
     match dotenvy::dotenv() {
         Ok(path) => tracing::info!("file {} loaded", path.display()),
         Err(err) if err.not_found() => tracing::info!(".env file not found"),
@@ -39,11 +37,21 @@ async fn main() -> Result<()> {
     trace_init();
 
     let config = Config::load()?;
-    let tcp_listener = TcpListener::bind(&config.addr).await?;
+
+    let tcp_listener = std::net::TcpListener::bind(config.addr)?;
+    tcp_listener.set_nonblocking(true)?;
     let local_addr = tcp_listener.local_addr()?;
 
     let users = UserDb::load(config.users)?;
-    tokio::spawn(users.watcher()?);
+    let _watcher = users.run_watcher()?;
+
+    let mut jinja = Jinja::new();
+    jinja.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
+    jinja.add_template("login.html", include_str!("../templates/login.html"))?;
+    jinja.add_template(
+        "openid-configuration.json",
+        include_str!("../templates/openid-configuration.json"),
+    )?;
 
     let state = AppState {
         issuer: config
@@ -52,6 +60,7 @@ async fn main() -> Result<()> {
         rs256: RS256::new()?,
         sessions: Sessions::new(),
         users,
+        jinja,
     };
 
     let router = Router::new()
@@ -65,9 +74,17 @@ async fn main() -> Result<()> {
         .with_state(state);
 
     tracing::info!("listening on {}", local_addr);
-    axum::serve(tcp_listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async move {
+            use tokio::net::TcpListener;
+
+            let tcp_listener = TcpListener::from_std(tcp_listener)?;
+            axum::serve(tcp_listener, router)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+        })?;
 
     Ok(())
 }
@@ -234,8 +251,6 @@ struct UserDbInner {
     metadata: parking_lot::RwLock<HashMap<String, JsonValue>>,
 }
 
-type JoinWatcher = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
-
 impl UserDb {
     fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = std::fs::canonicalize(path)?;
@@ -262,7 +277,7 @@ impl UserDb {
             .unwrap_or_else(|| json!({}))
     }
 
-    fn clone_all_metadata(&self) -> HashMap<String, String> {
+    fn clone_all_metadata(&self) -> Vec<(String, String)> {
         self.0
             .metadata
             .read()
@@ -272,37 +287,57 @@ impl UserDb {
             .collect()
     }
 
-    fn watcher(&self) -> Result<JoinWatcher> {
-        use futures::{future::ready, FutureExt, TryFutureExt};
-        use watchexec::Watchexec;
-        use watchexec_signals::Signal;
+    fn run_watcher(&self) -> Result<Watcher> {
+        use notify::{poll::PollWatcher, Watcher};
 
         let this = self.clone();
-        let path = &self.0.path;
-
-        let wx = Watchexec::new(move |mut action| {
-            let path = &this.0.path;
-            if action.paths().any(|(p, _)| p == path) {
-                let mut metadata = this.0.metadata.write();
-                if let Ok(file_content) = std::fs::read_to_string(&this.0.path) {
-                    if let Ok(new_metadata) = toml::from_str(&file_content) {
-                        tracing::info!("reload user metadata from {}", path.display());
-                        *metadata = new_metadata;
+        let config = notify::Config::default()
+            .with_poll_interval(std::time::Duration::from_millis(500))
+            .with_compare_contents(true);
+        let mut watcher = PollWatcher::new(
+            move |res: notify::Result<notify::Event>| match res {
+                Ok(event) => {
+                    let UserDbInner { path, metadata } = &*this.0;
+                    if event.paths.iter().any(|p| p == path) {
+                        let mut metadata = metadata.write();
+                        if let Ok(file_content) = std::fs::read_to_string(path) {
+                            if let Ok(new_metadata) = toml::from_str(&file_content) {
+                                tracing::info!("reload user metadata from {}", path.display());
+                                *metadata = new_metadata;
+                            }
+                        }
                     }
                 }
-            }
-            if action.signals().any(|sig| sig == Signal::Interrupt) {
-                action.quit();
-            }
+                Err(e) => tracing::warn!("watch error: {:?}", e),
+            },
+            config,
+        )?;
 
-            action
-        })?;
-        wx.config.pathset([path]);
-        Ok(wx
-            .main()
-            .map_err(|err| anyhow!("failed to spawn watchexec process: {}", err))
-            .and_then(|res| ready(res.map_err(|err| anyhow!(err))))
-            .boxed())
+        let path = &self.0.path;
+        watcher.watch(path, notify::RecursiveMode::Recursive)?;
+
+        Ok(Watcher(watcher))
+    }
+}
+
+struct Watcher(notify::PollWatcher);
+
+pin_project! {
+    struct JoinWatcher {
+        #[pin]
+        join: tokio::task::JoinHandle<Result<(), notify::Error>>
+    }
+}
+
+impl std::future::Future for JoinWatcher {
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        ready!(this.join.poll(cx))
+            .map_err(|err| anyhow!("failed to spawn watchexec process: {}", err))?
+            .map_err(|err| anyhow!(err))
+            .into()
     }
 }
 
@@ -311,7 +346,7 @@ impl UserDb {
 struct Sessions(Arc<SessionsInner>);
 
 struct SessionsInner {
-    sessions: RwLock<HashMap<SessionCode, Session>>,
+    sessions: tokio::sync::RwLock<HashMap<SessionCode, Session>>,
 }
 
 #[derive(Clone)]
@@ -392,7 +427,7 @@ pub struct IdTokenClaims<'a, M> {
 
 impl Sessions {
     pub fn new() -> Self {
-        let sessions = RwLock::new(HashMap::new());
+        let sessions = tokio::sync::RwLock::new(HashMap::new());
         let inner = SessionsInner { sessions };
         Self(Arc::new(inner))
     }
@@ -548,12 +583,13 @@ async fn shutdown_signal() {
 }
 
 /// Application state
-#[derive(Clone, FromRef)]
+#[derive(Clone)]
 struct AppState {
     issuer: Issuer,
     rs256: RS256,
     sessions: Sessions,
     users: UserDb,
+    jinja: Jinja,
 }
 
 /// Page not found
@@ -572,30 +608,37 @@ async fn favicon() -> Response {
 
 /// JSON Web Key Set
 #[tracing::instrument("GET /.well-known/jwks.json", level = "info", skip_all)]
-async fn jwks(State(rs256): State<RS256>) -> Response {
+async fn jwks(State(state): State<AppState>) -> Response {
+    let AppState { rs256, .. } = state;
     Json(rs256.jwks()).into_response()
 }
 
 // OpenId configuration
 #[tracing::instrument("GET /.well-known/openid-configuration", level = "info", skip_all)]
-async fn openid(State(issuer): State<Issuer>) -> Response {
-    #[derive(Debug, Template)]
-    #[template(path = "openid-configuration.json", escape = "none")]
-    struct OpenIdConfiguration {
-        issuer: Issuer,
-    }
+async fn openid(State(state): State<AppState>) -> Response {
+    use minijinja::context;
 
-    OpenIdConfiguration { issuer }.into_response()
+    let AppState { issuer, jinja, .. } = state;
+    let template = jinja.get_template("openid-configuration.json").unwrap();
+    let content = template.render(context!(issuer)).unwrap();
+    let headers = [(header::CONTENT_TYPE, "application/json")];
+    (headers, content).into_response()
 }
 
 // Authorization Request, see #4.1.1 of oauth2 specs
-#[tracing::instrument("GET /authorize", level = "info", skip(sessions, users))]
+#[tracing::instrument("GET /authorize", level = "info", skip(state))]
 async fn authorize(
-    State(sessions): State<Sessions>,
-    State(users): State<UserDb>,
+    State(state): State<AppState>,
     code: Option<SessionCode>,
     Query(req): Query<AuthorizeReq>,
 ) -> Response {
+    let AppState {
+        sessions,
+        users,
+        jinja,
+        ..
+    } = state;
+
     if let Some(code) = code {
         if sessions.load(&code).await.is_some() {
             let redirect_uri = code.build_redirect_uri(req.redirect_uri, req.state);
@@ -619,14 +662,20 @@ async fn authorize(
             (headers, StatusCode::FOUND).into_response()
         }
         _ => {
-            return Login {
-                users: users.clone_all_metadata(),
-                client_id: req.client_id,
-                redirect_uri: req.redirect_uri,
-                state: req.state,
-                nonce: req.nonce,
-            }
-            .into_response();
+            use minijinja::context;
+
+            let template = jinja.get_template("login.html").unwrap();
+            let content = template
+                .render(context! {
+                    users => users.clone_all_metadata(),
+                    client_id => req.client_id,
+                    redirect_uri => req.redirect_uri,
+                    state => req.state,
+                    nonce => req.nonce,
+                })
+                .unwrap();
+            let headers = [(header::CONTENT_TYPE, "text/html; charset=utf-8")];
+            (headers, content).into_response()
         }
     }
 }
@@ -655,23 +704,15 @@ impl std::fmt::Debug for AuthorizeReq {
     }
 }
 
-#[derive(Template)]
-#[template(path = "login.html", escape = "none")]
-struct Login {
-    users: HashMap<String, String>,
-    client_id: String,
-    redirect_uri: Url,
-    state: Option<String>,
-    nonce: Option<String>,
-}
-
 /// Logout endpoint
-#[tracing::instrument("GET /v2/logout", level = "info", skip(sessions))]
+#[tracing::instrument("GET /v2/logout", level = "info", skip(state))]
 async fn logout(
-    State(sessions): State<Sessions>,
+    State(state): State<AppState>,
     code: Option<SessionCode>,
     Query(req): Query<LogoutReq>,
 ) -> Response {
+    let AppState { sessions, .. } = state;
+
     if let Some(code) = code {
         sessions.drop(&code).await;
     }
@@ -708,6 +749,7 @@ async fn token(
         rs256,
         sessions,
         users,
+        ..
     } = state;
 
     let session = sessions

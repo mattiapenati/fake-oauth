@@ -37,8 +37,8 @@
           <div class="o-grid o-grid--wrap">
             <div class="o-grid__cell o-grid__cell--width-100">
               <select id="user_id" name="user_id" class="c-field">
-              {% for user in users %}
-                <option value="{{user.0}}">{{user.0}}</option>
+              {% for (user_id, _) in users %}
+                <option value="{{ user_id }}">{{ user_id }}</option>
               {% endfor %}
               </select>
             </div>
@@ -58,18 +58,14 @@
           </small>
         </div>
 
-        <input type="hidden" id="client_id" name="client_id" value="{{client_id}}">
-        <input type="hidden" id="redirect_uri" name="redirect_uri" value="{{redirect_uri}}">
-        {% match state %}
-        {% when Some with (state_value) %}
-        <input type="hidden" id="state" name="state" value="{{state_value}}">
-        {% else %}
-        {% endmatch -%}
-        {%- match nonce %}
-        {% when Some with (nonce_value) %}
-        <input type="hidden" id="nonce" name="nonce" value="{{nonce_value}}">
-        {% else %}
-        {% endmatch %}
+        <input type="hidden" id="client_id" name="client_id" value="{{ client_id }}">
+        <input type="hidden" id="redirect_uri" name="redirect_uri" value="{{ redirect_uri }}">
+        {% if state is not none %}
+        <input type="hidden" id="state" name="state" value="{{ state_value }}">
+        {% endif %}
+        {% if nonce_value is not none %}
+        <input type="hidden" id="nonce" name="nonce" value="{{ nonce_value }}">
+        {% endif %}
       </form>
     </div>
   <script>
@@ -77,10 +73,10 @@
       const user_id = document.getElementById("user_id").value;
       const metadata = document.getElementById("metadata");
       let code;
-      {% for user in users %}
+      {% for (user_id, metadata) in users %}
       switch (user_id) {
-        case "{{user.0}}":
-          code = JSON.stringify({{user.1}}, null, 2);
+        case "{{ user_id }}":
+          code = JSON.stringify({{ metadata }}, null, 2);
           break;
       }
       {% endfor %}
