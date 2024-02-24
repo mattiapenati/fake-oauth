@@ -1,7 +1,10 @@
 # fake-oauth
 
+[![Latest Version][crates-badge]][crates.io]
 ![Apache 2.0 OR MIT licensed][license-badge]
 
+[crates.io]: https://crates.io/crates/fake-oauth
+[crates-badge]: https://img.shields.io/crates/v/fake-oauth.svg
 [license-badge]: https://img.shields.io/badge/license-Apache2.0%2FMIT-blue.svg
 
 A fake OAuth implementation good for testing environment. Fake users with
