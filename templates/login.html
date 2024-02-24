@@ -61,10 +61,10 @@
         <input type="hidden" id="client_id" name="client_id" value="{{ client_id }}">
         <input type="hidden" id="redirect_uri" name="redirect_uri" value="{{ redirect_uri }}">
         {% if state is not none %}
-        <input type="hidden" id="state" name="state" value="{{ state_value }}">
+        <input type="hidden" id="state" name="state" value="{{ state }}">
         {% endif %}
-        {% if nonce_value is not none %}
-        <input type="hidden" id="nonce" name="nonce" value="{{ nonce_value }}">
+        {% if nonce is not none %}
+        <input type="hidden" id="nonce" name="nonce" value="{{ nonce }}">
         {% endif %}
       </form>
     </div>
