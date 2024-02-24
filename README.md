@@ -9,6 +9,20 @@ customized claims can be defined to test your application with different
 profile or to reproduce the production environment without compromising the
 security of your systems.
 
+## Install
+
+If cargo is installed, fake-oauth can be installed with it:
+
+```
+$ cargo install fake-oauth
+```
+
+Alternatively you can run fake-oauth docker image using the following command:
+
+```
+$ docker run -p 7160:7160 ghcr.io/mattiapenati/fake-oauth
+```
+
 ## Configuration
 
 It is quite easy to configure the fake-oauth. The behaviour of the server can
