@@ -41,7 +41,8 @@ be customized using the enviroment variables:
 
 File `users.toml` contains the definition of the user, each user is identified
 by its id (`sub` field of access token) and you can define its metadata used to
-populate the token claims. Look at `assets/users.tom` file for an example.
+populate the token claims. Look at [`assets/users.toml`](assets/users.toml)
+file for an example.
 
 ## License
 
