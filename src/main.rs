@@ -18,7 +18,8 @@ use axum::{
 };
 use cookie::Cookie;
 use pin_project_lite::pin_project;
-use serde::{Deserialize, Serialize};
+use rsa::pkcs8::EncodePublicKey;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use time::{Duration, OffsetDateTime};
 use url::Url;
@@ -70,6 +71,7 @@ fn main() -> Result<()> {
         .route("/authorize", routing::get(authorize))
         .route("/v2/logout", routing::get(logout))
         .route("/oauth/token", routing::post(token))
+        .route("/userinfo", routing::get(userinfo))
         .fallback(page_not_found)
         .with_state(state);
 
@@ -167,6 +169,7 @@ struct RS256(Arc<RS256Inner>);
 struct RS256Inner {
     key_id: String,
     encoding_key: jsonwebtoken::EncodingKey,
+    decoding_key: jsonwebtoken::DecodingKey,
     jwk_set: jsonwebtoken::jwk::JwkSet,
 }
 
@@ -180,13 +183,19 @@ impl RS256 {
         let key_id = Self::random_key_id();
 
         let private_key = RsaPrivateKey::new(&mut OsRng, 2048)?;
+        let public_key = private_key.to_public_key();
+
         let encoding_key = EncodingKey::from_rsa_pem(
             private_key
                 .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)?
                 .as_bytes(),
         )?;
+        let decoding_key = DecodingKey::from_rsa_pem(
+            public_key
+                .to_public_key_pem(rsa::pkcs8::LineEnding::LF)?
+                .as_bytes(),
+        )?;
 
-        let public_key = private_key.to_public_key();
         let jwk = Jwk {
             common: CommonParameters {
                 key_algorithm: Some(KeyAlgorithm::RS256),
@@ -206,6 +215,7 @@ impl RS256 {
         let inner = RS256Inner {
             key_id,
             encoding_key,
+            decoding_key,
             jwk_set,
         };
         Ok(Self(Arc::new(inner)))
@@ -219,6 +229,18 @@ impl RS256 {
         header.kid = Some(self.0.key_id.clone());
         let encoding_key = &self.0.encoding_key;
         encode(&header, claims, encoding_key).map_err(Into::into)
+    }
+
+    /// Decode the claims in a token
+    fn decode<T: DeserializeOwned>(&self, token: &str) -> Result<T> {
+        use jsonwebtoken::*;
+
+        let decoding_key = &self.0.decoding_key;
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.validate_aud = false;
+        decode(token, decoding_key, &validation)
+            .map(|token| token.claims)
+            .map_err(Into::into)
     }
 
     /// Return the json Web Key Set
@@ -389,7 +411,7 @@ impl Session {
     }
 
     /// Generate the id token claims
-    pub fn id_token_claims<'a, M>(
+    fn id_token_claims<'a, M>(
         &'a self,
         issuer: &'a str,
         subject: &'a str,
@@ -407,7 +429,7 @@ impl Session {
 }
 
 #[derive(Serialize)]
-pub struct AccessTokenClaims<'a> {
+struct AccessTokenClaims<'a> {
     iss: &'a str,
     sub: &'a str,
     aud: &'a str,
@@ -416,7 +438,7 @@ pub struct AccessTokenClaims<'a> {
 }
 
 #[derive(Serialize)]
-pub struct IdTokenClaims<'a, M> {
+struct IdTokenClaims<'a, M> {
     #[serde(flatten)]
     access_token_claims: AccessTokenClaims<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -426,14 +448,14 @@ pub struct IdTokenClaims<'a, M> {
 }
 
 impl Sessions {
-    pub fn new() -> Self {
+    fn new() -> Self {
         let sessions = tokio::sync::RwLock::new(HashMap::new());
         let inner = SessionsInner { sessions };
         Self(Arc::new(inner))
     }
 
     /// Save a new session and return session code
-    pub async fn save(&self, session: Session) -> SessionCode {
+    async fn save(&self, session: Session) -> SessionCode {
         let session_code = SessionCode::random();
         {
             let mut sessions = self.0.sessions.write().await;
@@ -443,7 +465,7 @@ impl Sessions {
     }
 
     /// Try to load a session
-    pub async fn load(&self, code: &SessionCode) -> Option<Session> {
+    async fn load(&self, code: &SessionCode) -> Option<Session> {
         let mut sessions = self.0.sessions.write().await;
         match sessions.get(code) {
             Some(session) if !session.is_expired() => Some(session.clone()),
@@ -455,7 +477,7 @@ impl Sessions {
     }
 
     /// Drop a session
-    pub async fn drop(&self, code: &SessionCode) {
+    async fn drop(&self, code: &SessionCode) {
         let mut sessions = self.0.sessions.write().await;
         sessions.remove(code);
     }
@@ -465,7 +487,7 @@ impl Sessions {
 #[derive(Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[repr(transparent)]
 #[serde(transparent)]
-pub struct SessionCode(String);
+struct SessionCode(String);
 
 impl std::fmt::Debug for SessionCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -475,7 +497,7 @@ impl std::fmt::Debug for SessionCode {
 
 impl SessionCode {
     /// Create the header to unset the cookie
-    pub fn build_unset_cookie() -> String {
+    fn build_unset_cookie() -> String {
         Cookie::build((COOKIE_NAME, ""))
             .max_age(Duration::ZERO)
             .path("/")
@@ -484,7 +506,7 @@ impl SessionCode {
     }
 
     /// Create the header to set cookie
-    pub fn build_set_cookie(&self) -> String {
+    fn build_set_cookie(&self) -> String {
         Cookie::build((COOKIE_NAME, &self.0))
             .max_age(COOKIE_LIFETIME)
             .path("/")
@@ -493,7 +515,7 @@ impl SessionCode {
     }
 
     /// Create the redirect url
-    pub fn build_redirect_uri(&self, mut redirect_uri: Url, state: Option<String>) -> String {
+    fn build_redirect_uri(&self, mut redirect_uri: Url, state: Option<String>) -> String {
         #[derive(Debug, Serialize)]
         struct Query<'a> {
             code: &'a str,
@@ -782,4 +804,53 @@ async fn token(
 #[derive(Debug, Deserialize)]
 struct TokenReq {
     code: SessionCode,
+}
+
+/// Userinfo endpoint
+#[tracing::instrument("GET /userinfo", level = "info", skip(state))]
+async fn userinfo(
+    State(state): State<AppState>,
+    Bearer(token): Bearer,
+) -> Result<Response, StatusCode> {
+    let AppState { rs256, users, .. } = state;
+    let claims: JsonValue = rs256.decode(&token).map_err(|err| {
+        tracing::error!("failed to decode JWT: {}", err);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let user_id = claims
+        .get("sub")
+        .and_then(|sub| sub.as_str())
+        .ok_or_else(|| {
+            tracing::warn!("missing token subject");
+            StatusCode::UNAUTHORIZED
+        })?;
+    let mut user_metadata = users.get_metadata(user_id);
+    if let Some(metadata) = user_metadata.as_object_mut() {
+        metadata.insert("sub".to_string(), JsonValue::from(user_id));
+    }
+    Ok(Json(user_metadata).into_response())
+}
+
+struct Bearer(String);
+
+#[axum::async_trait]
+impl<S> FromRequestParts<S> for Bearer {
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let authorization = parts
+            .headers
+            .remove(header::AUTHORIZATION)
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+
+        let authorization = authorization
+            .to_str()
+            .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+        let token = authorization
+            .strip_prefix("Bearer ")
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+
+        Ok(Bearer(token.to_owned()))
+    }
 }
