@@ -831,6 +831,7 @@ async fn userinfo(
     Ok(Json(user_metadata).into_response())
 }
 
+/// Extract bearer token
 struct Bearer(String);
 
 #[axum::async_trait]
